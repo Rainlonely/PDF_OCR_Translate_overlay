@@ -1,0 +1,26 @@
+# Ignore everything by default.
+*
+
+# Keep repository metadata files.
+!.gitignore
+!README.md
+
+# Keep scripts and their contents.
+!scripts/
+!scripts/**
+
+# Keep directory skeleton only.
+!output/
+output/*
+!output/pdf/
+output/pdf/*
+!output/pdf/.gitkeep
+
+!tmp/
+tmp/*
+!tmp/pdfs/
+tmp/pdfs/*
+!tmp/pdfs/.gitkeep
+
+# macOS noise.
+.DS_Store
