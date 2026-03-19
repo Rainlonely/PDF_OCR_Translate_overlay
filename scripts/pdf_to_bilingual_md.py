@@ -157,6 +157,10 @@ def rows_to_rect(rows: List[List[Dict[str, float]]], pad: float = 6.0) -> fitz.R
     return fitz.Rect(x0, y0, x1, y1)
 
 
+def rects_overlap(a: fitz.Rect, b: fitz.Rect) -> bool:
+    return not (a.x1 <= b.x0 or a.x0 >= b.x1 or a.y1 <= b.y0 or a.y0 >= b.y1)
+
+
 def classify_row(row: List[Dict[str, float]], page_h: float) -> str:
     y0 = min(c["y0"] for c in row)
     if y0 <= page_h * 0.10:
@@ -328,6 +332,58 @@ def build_structured_text_from_ocr(
     return "\n\n".join(sec.strip() for sec in sections if sec.strip())
 
 
+def build_structured_text_from_native(page: fitz.Page) -> str:
+    sections: List[tuple[float, str]] = []
+    page_h = page.rect.height
+    table_rects: List[fitz.Rect] = []
+
+    if hasattr(page, "find_tables"):
+        try:
+            tables = page.find_tables().tables
+            for table in tables:
+                table_rects.append(fitz.Rect(table.bbox))
+                rows = table.extract() or []
+                table_lines: List[str] = []
+                for row in rows:
+                    cells = []
+                    for cell in row:
+                        txt = normalize_newlines(str(cell or ""))
+                        cells.append(txt)
+                    table_lines.append(" | ".join(cells))
+                if table_lines:
+                    sections.append((table.bbox[1], "[TABLE]\n" + "\n".join(table_lines)))
+        except Exception:
+            pass
+
+    data = page.get_text("dict")
+    for block in data.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        bbox = fitz.Rect(block["bbox"])
+        if any(rects_overlap(bbox, t) for t in table_rects):
+            continue
+        lines = []
+        for ln in block.get("lines", []):
+            spans = ln.get("spans", [])
+            if not spans:
+                continue
+            txt = "".join(s.get("text", "") for s in spans).strip()
+            if txt:
+                lines.append(txt)
+        text = normalize_newlines("\n".join(lines))
+        if not text:
+            continue
+        if bbox.y0 <= page_h * 0.10:
+            sections.append((bbox.y0, "[HEADER]\n" + text))
+        elif bbox.y0 >= page_h * 0.90:
+            sections.append((bbox.y0, "[FOOTER]\n" + text))
+        else:
+            sections.append((bbox.y0, text))
+
+    sections.sort(key=lambda item: item[0])
+    return "\n\n".join(text for _, text in sections)
+
+
 def translate_text(text: str, tr: GoogleTranslator, cache: Dict[str, str]) -> str:
     key = "MDv2::" + text
     if key in cache:
@@ -471,7 +527,10 @@ def main() -> None:
     for i, page in enumerate(doc, 1):
         raw = page.get_text("text") or ""
         raw = normalize_newlines(raw)
-        if not raw:
+        if raw:
+            raw = build_structured_text_from_native(page)
+            raw = normalize_newlines(raw)
+        else:
             # OCR fallback for scanned PDFs with layout reconstruction.
             pix = page.get_pixmap(dpi=220)
             img_path = state_dir / f"page_{i:03d}.png"
